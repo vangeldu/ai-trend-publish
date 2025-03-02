@@ -10,6 +10,7 @@ interface SourceItem {
 }
 
 interface PlatformSources {
+  api: SourceItem[];
   firecrawl: SourceItem[];
   twitter: SourceItem[];
 }
@@ -27,9 +28,9 @@ interface CronSource {
 export const sourceConfigs: SourceConfig = {
   AI: {
     firecrawl: [
-      { identifier: "https://hot.imsyy.top/#/list?type=baidu&page=1" },
-      { identifier: "https://hot.imsyy.top/#/list?type=toutiao&page=1" },
-      { identifier: "https://hot.imsyy.top/#/list?type=netease-news&page=1" },
+      // { identifier: "https://hot.imsyy.top/#/list?type=netease-news&page=1" },
+      // { identifier: "https://hot.imsyy.top/#/list?type=toutiao&page=1" },
+      // { identifier: "https://hot.imsyy.top/#/list?type=netease-news&page=1" },
       // { identifier: "https://news.ycombinator.com/" },
       // {
       //   identifier:
@@ -73,18 +74,26 @@ export const sourceConfigs: SourceConfig = {
       // { identifier: "https://x.com/weights_biases" },
       // { identifier: "https://x.com/replicate" },
     ],
+    api: [
+      // {identifier: "https://api-hot.imsyy.top/netease-news"}
+    ]
   },
   Tech: {
     firecrawl: [],
     twitter: [],
+    api: [],
   },
   Crypto: {
     firecrawl: [],
     twitter: [],
+    api: [],
   },
   All: {
     firecrawl: [],
     twitter: [],
+    api: [
+      {identifier: "https://api-hot.imsyy.top/netease-news"}
+    ],
   },
 } as const;
 

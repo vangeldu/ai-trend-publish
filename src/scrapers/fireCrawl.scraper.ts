@@ -67,7 +67,7 @@ export class FireCrawlScraper implements ContentScraper {
 
       // 构建提取提示词
       const promptForFirecrawl = `
-      Return only today's AI or LLM related story or post headlines and links in JSON format from the page content. 
+      Return JSON format from the page content. 
       They must be posted today, ${currentDate}. The format should be:
         {
           "stories": [
@@ -80,13 +80,12 @@ export class FireCrawlScraper implements ContentScraper {
             ...
           ]
         }
-      If there are no AI or LLM stories from today, return {"stories": []}.
+      If there are no stories from today, return {"stories": []}.
       
       The source link is ${sourceId}. 
       If a story link is not absolute, prepend ${sourceId} to make it absolute. 
       Return only pure JSON in the specified format (no extra text, no markdown, no \\\\).  
       The content should be about 500 words, which can summarize the full text and the main point.
-      Translate all into Chinese.
       !!
       `;
 

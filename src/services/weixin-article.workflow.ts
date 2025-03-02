@@ -19,6 +19,7 @@ import { DeepseekAPI } from "../api/deepseek.api";
 import { ContentRanker, RankResult } from "../utils/content-rank/content-ranker";
 import { QianwenAISummarizer } from "../summarizer/qianwen-ai.summarizer";
 import { ConfigManager } from "../utils/config/config-manager";
+import axios from "axios";
 
 dotenv.config();
 
@@ -40,7 +41,7 @@ export class WeixinWorkflow {
     this.scraper = new Map<string, ContentScraper>();
     this.scraper.set("fireCrawl", new FireCrawlScraper());
     this.scraper.set("twitter", new TwitterScraper());
-    this.summarizer = new QianwenAISummarizer();
+    this.summarizer = new DeepseekAISummarizer();
     this.publisher = new WeixinPublisher();
     this.notifier = new BarkNotifier();
     this.renderer = new WeixinTemplateRenderer();
@@ -115,188 +116,210 @@ export class WeixinWorkflow {
       // 1. 获取数据源
       const sourceConfigs = await getCronSources();
 
-      const sourceIds = sourceConfigs.AI;
-      const totalSources =
-        sourceIds.firecrawl.length + sourceIds.twitter.length;
-      console.log(`[数据源] 发现 ${totalSources} 个数据源`);
+      // 修改为从 sourceConfigs.All.api 获取接口 URL
+      console.log("[数据源] 从 API 获取数据");
+      
+      // 检查 API URL 是否存在
+      if (!sourceConfigs.All || !sourceConfigs.All.api || sourceConfigs.All.api.length === 0) {
+        throw new Error("API URL 未配置，请检查 sourceConfigs.All.api");
+      }
+      
+      // 获取第一个 API URL
+      const apiUrl = sourceConfigs.All.api[0].identifier;
+      console.log(`[数据源] API URL: ${apiUrl}`);
+      
+      // 请求 API 获取数据
+      let apiData: { data: Array<{
+        author: string;
+        cover: string;
+        id: string;
+        mobileUrl: string;
+        timestamp: number;
+        title: string;
+        url: string;
+      }> } = { data: [] };
+      
+      try {
+        console.log("[数据源] 开始请求 API 数据");
+        const response = await axios.get(apiUrl);
+        apiData = response.data;
+        console.log(`[数据源] 获取到 ${apiData.data.length} 条数据`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[数据源] API 请求失败: ${message}`);
+        await this.notifier.error("API 请求失败", message);
+        throw error;
+      }
 
+      apiData.data = apiData.data.splice(0,5) // TODO
+      
+      if (!apiData.data || apiData.data.length === 0) {
+        const message = "API 返回数据为空";
+        console.error(`[数据源] ${message}`);
+        await this.notifier.error("数据源错误", message);
+        throw new Error(message);
+      }
+
+      // 2. 抓取、处理和发布内容
+      console.log(`\n[工作流] 开始抓取、处理和发布 ${apiData.data.length} 条内容`);
       const progress = new cliProgress.SingleBar(
         {},
         cliProgress.Presets.shades_classic
       );
-      progress.start(totalSources, 0);
-      let currentProgress = 0;
-
-      // 2. 抓取内容
-      const allContents: ScrapedContent[] = [];
-
-      // FireCrawl sources
+      progress.start(apiData.data.length, 0);
+      
+      // 获取 FireCrawl 抓取器
       const fireCrawlScraper = this.scraper.get("fireCrawl");
       if (!fireCrawlScraper) throw new Error("FireCrawlScraper not found");
-
-      for (const source of sourceIds.firecrawl) {
-        const contents = await this.scrapeSource(
-          "FireCrawl",
-          source,
-          fireCrawlScraper
-        );
-        allContents.push(...contents);
-        progress.update(++currentProgress);
+      
+      const publishResults = [];
+      let processedCount = 0;
+      
+      // 逐个抓取、处理和发布内容
+      for (const item of apiData.data) {
+        try {
+          // 1. 抓取内容
+          console.log(`[抓取] 抓取内容: ${item.title} (${item.url})`);
+          const contents = await fireCrawlScraper.scrape(item.url);
+          
+          if (contents.length === 0) {
+            console.log(`[抓取] 未从 ${item.url} 抓取到内容，跳过`);
+            this.stats.failed++;
+            progress.update(++processedCount);
+            continue;
+          }
+          
+          // 使用第一个内容（通常只有一个）
+          const content = contents[0];
+          
+          // 2. 处理内容
+          console.log(`[处理] 处理内容: ${content.id}`);
+          await this.processContent(content);
+          
+          // 3. 转换为模板数据
+          const article: WeixinTemplate = {
+            id: content.id,
+            title: content.title,
+            content: content.content,
+            url: content.url,
+            publishDate: content.publishDate,
+            metadata: content.metadata,
+            keywords: content.metadata.keywords,
+          };
+          
+          // 4. 生成封面
+          let mediaId = "";
+          
+            // 生成新封面
+          mediaId = await this.generateAndUploadCover(article.title);
+          
+          
+          // 5. 渲染单篇文章模板
+          const singleArticleTemplate = this.renderer.render([article]);
+          
+          // 6. 立即发布文章
+          console.log(`[发布] 发布文章: ${article.title}`);
+          const publishResult = await this.publisher.publish(
+            singleArticleTemplate,
+            article.title,
+            article.title,
+            mediaId
+          );
+          
+          publishResults.push(publishResult);
+          console.log(`[发布结果] 文章 "${article.title}" 发布状态: ${publishResult.status}`);
+          
+          this.stats.success++;
+          this.stats.contents++;
+        } catch (error) {
+          this.stats.failed++;
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`[处理] ${item.url} 处理失败:`, message);
+          await this.notifier.warning(
+            "内容处理失败",
+            `URL: ${item.url}\n错误: ${message}`
+          );
+        }
+        
+        progress.update(++processedCount);
       }
-
-      // Twitter sources
-      const twitterScraper = this.scraper.get("twitter");
-      if (!twitterScraper) throw new Error("TwitterScraper not found");
-
-      for (const source of sourceIds.twitter) {
-        const contents = await this.scrapeSource(
-          "Twitter",
-          source,
-          twitterScraper
-        );
-        allContents.push(...contents);
-        progress.update(++currentProgress);
-      }
+      
       progress.stop();
-
-      this.stats.contents = allContents.length;
+      
+      // 检查是否有成功处理的内容
       if (this.stats.contents === 0) {
-        const message = "未获取到任何内容";
+        const message = "未成功处理任何内容";
         console.error(`[工作流] ${message}`);
         await this.notifier.error("工作流终止", message);
         return;
       }
 
-      // 3. 内容处理
-      console.log(`\n[内容处理] 处理 ${allContents.length} 条内容`);
-      const summaryProgress = new cliProgress.SingleBar(
-        {},
-        cliProgress.Presets.shades_classic
-      );
-      summaryProgress.start(allContents.length, 0);
-
-      // 批量处理内容
-      const batchSize = 1;
-      for (let i = 0; i < allContents.length; i += batchSize) {
-        const batch = allContents.slice(i, i + batchSize);
-        await Promise.all(
-          batch.map(async (content) => {
-            await this.processContent(content);
-            summaryProgress.increment();
-          })
-        );
-      }
-      summaryProgress.stop();
-
-
-
-      // 4. 内容排序
-      console.log(`[内容排序] 开始排序 ${allContents.length} 条内容`);
-      let rankedContents: RankResult[] = [];
-      try {
-        const configManager = ConfigManager.getInstance();
-        const ranker = new ContentRanker({
-          provider: "deepseek",
-          apiKey: await configManager.get("DEEPSEEK_API_KEY") as string,
-          modelName: "deepseek-reasoner"
-        });
-        rankedContents = await ranker.rankContents(allContents);
-
-        console.log("内容排序完成", rankedContents);
-      } catch (error) {
-        console.error("内容排序失败:", error);
-        await this.notifier.error("内容排序失败", "请检查API额度");
-      }
-
-      // 分数更新
-      console.log(`[分数更新] 开始更新 ${allContents.length} 条内容`);
-      if (rankedContents.length > 0) {
-        for (const content of allContents) {
-          const rankedContent = rankedContents.find(
-            (ranked) => ranked.id === content.id
-          );
-          if (rankedContent) {
-            content.score = rankedContent.score;
-          }
-        }
-      }
-
-      // 按照score排序
-      allContents.sort((a, b) => b.score - a.score);
-
-      // 取出前5条
-      const topContents = allContents.slice(0, 10);
-
-      // 4. 生成并发布
-      console.log("\n[模板生成] 生成微信文章");
-      const templateData: WeixinTemplate[] = topContents.map((content) => ({
-        id: content.id,
-        title: content.title,
-        content: content.content,
-        url: content.url,
-        publishDate: content.publishDate,
-        metadata: content.metadata,
-        keywords: content.metadata.keywords,
-      }));
-
-      // 将所有标题总结成一个标题，然后让AI生成一个最具有吸引力的标题
-      const summaryTitle = await this.summarizer.generateTitle(
-        allContents.map((content) => content.title).join(" | ")
-      ).then((title) => {
-        // 限制标题长度 为 64 个字符
-        return title.slice(0, 64);
-      });
-
-      console.log(`[标题生成] 生成标题: ${summaryTitle}`);
-
-      // 生成封面图片
-      const taskId = await this.imageGenerator
-        .generateImage("AI新闻日报的封面", "1440*768")
-        .then((res) => res.output.task_id);
-      console.log(`[封面图片] 封面图片生成任务ID: ${taskId}`);
-      const imageUrl = await this.imageGenerator
-        .waitForCompletion(taskId)
-        .then((res) => res.results?.[0]?.url)
-        .then((url) => {
-          if (!url) {
-            return "";
-          }
-          return url;
-        });
-
-      // 上传封面图片
-      const mediaId = await this.publisher.uploadImage(imageUrl);
-
-      const renderedTemplate = this.renderer.render(templateData);
-      console.log("[发布] 发布到微信公众号");
-      const publishResult = await this.publisher.publish(
-        renderedTemplate,
-        `${summaryTitle}`,
-        summaryTitle,
-        mediaId
-      );
-
-      // 5. 完成报告
+      // 添加延迟，确保之前的所有日志都已输出
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      // 添加明显的分隔线，使最终总结更加突出
+      console.log("\n\n");
+      console.log("=".repeat(80));
+      console.log("=".repeat(30) + " 工作流执行完成 " + "=".repeat(30));
+      console.log("=".repeat(80));
+      
+      // 完成报告
+      const successCount = publishResults.filter(r => r.status === "published" || r.status === "draft").length;
+      const failedCount = publishResults.length - successCount;
+      
       const summary = `
         工作流执行完成
-        - 数据源: ${totalSources} 个
+        - 数据源: ${apiData.data.length} 个
         - 成功: ${this.stats.success} 个
         - 失败: ${this.stats.failed} 个
         - 内容: ${this.stats.contents} 条
-        - 发布: ${publishResult.status}`.trim();
+        - 发布: ${successCount} 成功, ${failedCount} 失败`.trim();
 
-      console.log(`=== ${summary} ===`);
+      console.log(summary);
+      console.log("=".repeat(80));
+      console.log("\n");
 
-      if (this.stats.failed > 0) {
+      // 确保通知是最后发送的
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      if (this.stats.failed > 0 || failedCount > 0) {
         await this.notifier.warning("工作流完成(部分失败)", summary);
       } else {
         await this.notifier.success("工作流完成", summary);
       }
+      
+      // 最后再输出一次，确保这是控制台的最后内容
+      console.log("\n[工作流] 所有操作已完成，退出程序");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error("[工作流] 执行失败:", message);
       await this.notifier.error("工作流失败", message);
       throw error;
     }
+  }
+
+  private async generateAndUploadCover(title: string): Promise<string> {
+    // 为文章生成封面图片，使用标题作为提示词
+    console.log(`[封面图片] 为文章生成封面图片: ${title}`);
+    const taskId = await this.imageGenerator
+      .generateImage(`帮我生成一个标题封面，标题是：${title} ,封面不需要文字，找最符合标题的图片`, "1440*768")
+      .then((res) => res.output.task_id);
+    
+    console.log(`[封面图片] 封面图片生成任务ID: ${taskId}`);
+    const imageUrl = await this.imageGenerator
+      .waitForCompletion(taskId)
+      .then((res) => res.results?.[0]?.url)
+      .then((url) => {
+        if (!url) {
+          throw new Error("封面图片生成失败");
+        }
+        return url;
+      });
+
+    // 上传封面图片
+    const mediaId = await this.publisher.uploadImage(imageUrl);
+    console.log(`[封面图片] 封面图片上传成功，媒体ID: ${mediaId}`);
+
+    return mediaId;
   }
 }
