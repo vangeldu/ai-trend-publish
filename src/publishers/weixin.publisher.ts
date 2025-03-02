@@ -93,11 +93,11 @@ export class WeixinPublisher implements ContentPublisher {
     const articles = [
       {
         title: title,
-        author: "刘耀文",
+        author: "小杜",
         digest: digest,
         content: article,
         thumb_media_id: mediaId,
-        need_open_comment: 1,
+        need_open_comment: 0,
         only_fans_can_comment: 0,
       },
     ];

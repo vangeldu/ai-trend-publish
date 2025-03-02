@@ -12,9 +12,9 @@ const initializeWorkflows = () => {
   // 周一的工作流 (1)
   workflowMap.set(1, new WeixinWorkflow());
   // 其他日期的工作流可以在这里添加
-  workflowMap.set(2, new WeixinAIBenchWorkflow()); // 周二
+  workflowMap.set(2, new WeixinWorkflow()); // 周二
   // workflowMap.set(3, new AnotherWorkflow()); // 周三
-  workflowMap.set(3, new WeixinHelloGithubWorkflow()); // 周三
+  workflowMap.set(3, new WeixinWorkflow()); // 周三
 
   workflowMap.set(4, new WeixinWorkflow());
 

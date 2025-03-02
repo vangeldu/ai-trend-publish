@@ -271,7 +271,7 @@ export class WeixinWorkflow {
       console.log("[发布] 发布到微信公众号");
       const publishResult = await this.publisher.publish(
         renderedTemplate,
-        `${new Date().toLocaleDateString()} AI速递 | ${summaryTitle}`,
+        `${summaryTitle}`,
         summaryTitle,
         mediaId
       );
